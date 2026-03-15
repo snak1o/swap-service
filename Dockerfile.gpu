@@ -1,6 +1,6 @@
 # --- RunPod GPU Worker ---
-# Этот образ разворачивается на RunPod Serverless
-# Содержит все AI-модели для GPU-обработки
+# MimicMotion (Tencent, ICML 2025) for full-body swap
+# Requires: A40 (48GB) or A100 (80GB)
 
 FROM runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04
 
@@ -17,43 +17,68 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     wget \
     && rm -rf /var/lib/apt/lists/*
 
-# Python deps
+# Python deps (base)
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install AI model dependencies
+# Clone MimicMotion
+RUN git clone https://github.com/tencent/MimicMotion.git /app/MimicMotion
+ENV PYTHONPATH="/app/MimicMotion:${PYTHONPATH}"
+
+# MimicMotion dependencies
+RUN pip install --no-cache-dir \
+    einops \
+    decord \
+    && pip install --no-cache-dir -r /app/MimicMotion/requirements.txt || true
+
+# AI model dependencies
 RUN pip install --no-cache-dir \
     git+https://github.com/facebookresearch/segment-anything-2.git \
-    easy-dwpose \
     insightface \
-    onnxruntime-gpu==1.16.3 \
-    diffusers \
-    accelerate \
-    transformers \
+    onnxruntime-gpu==1.16.2 \
     gfpgan
 
-# Ensure no CPU onnxruntime is present
+# Ensure no CPU onnxruntime conflicts
 RUN pip uninstall -y onnxruntime || true
 
-# Remove mediapipe if installed by requirements.txt to prevent controlnet_aux attribute errors on Linux
+# Remove mediapipe to prevent controlnet_aux attribute errors
 RUN pip uninstall -y mediapipe || true
 
 # Download model weights (cached in Docker layer)
 RUN mkdir -p /app/models
 
-# easy-dwpose initialization (downloads models to cache)
-RUN python -c "from easy_dwpose import DWposeDetector; DWposeDetector(device='cpu')" || true
+# SVD-XT 1.1 base model (required by MimicMotion)
+RUN python -c "\
+from huggingface_hub import snapshot_download; \
+snapshot_download('stabilityai/stable-video-diffusion-img2vid-xt-1-1', \
+    local_dir='/app/models/svd_xt_1_1', \
+    local_dir_use_symlinks=False)" || true
+
+# MimicMotion v1.1 checkpoint
+RUN wget -q -O /app/models/MimicMotion_1-1.pth \
+    https://huggingface.co/ixaac/MimicMotion/resolve/main/MimicMotion_1-1.pth || true
+
+# MimicMotion DWPose models (downloads to cache on first use)
+RUN python -c "\
+import sys; sys.path.insert(0, '/app/MimicMotion'); \
+from mimicmotion.dwpose.dwpose_detector import dwpose_detector; \
+print('DWPose initialized')" || true
 
 # SAM 2.1 Hiera Large weights
-RUN wget -q -P /app/models https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_large.pt || true
+RUN wget -q -P /app/models \
+    https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_large.pt || true
 
 # GFPGAN weights
-RUN wget -q -P /app/models https://github.com/TencentARC/GFPGAN/releases/download/v1.3.0/GFPGANv1.4.pth || true
+RUN wget -q -P /app/models \
+    https://github.com/TencentARC/GFPGAN/releases/download/v1.3.0/GFPGANv1.4.pth || true
 
 # InsightFace buffalo_l
-RUN python -c "from insightface.app import FaceAnalysis; fa = FaceAnalysis(name='buffalo_l'); fa.prepare(ctx_id=0)" || true
+RUN python -c "\
+from insightface.app import FaceAnalysis; \
+fa = FaceAnalysis(name='buffalo_l'); \
+fa.prepare(ctx_id=0)" || true
 
-# Copy app code
+# Copy app code (last layer — changes most often)
 COPY app/ /app/app/
 
 # Copy handler

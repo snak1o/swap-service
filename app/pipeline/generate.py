@@ -1,276 +1,241 @@
-"""Модуль генерации тела — Animate Anyone 2 / WAN 2.2."""
+"""Body generation using MimicMotion — pose-guided video synthesis (Tencent, ICML 2025)."""
 
 import gc
+import logging
+import math
 import os
-from pathlib import Path
+import tempfile
 from typing import List, Optional
 
 import cv2
 import numpy as np
+import torch
 
+logger = logging.getLogger(__name__)
 
-SVD_XT_NUM_FRAMES = 25
-SVD_XT_INFERENCE_STEPS = 15
+MIMIC_BASE_MODEL = "/app/models/svd_xt_1_1"
+MIMIC_CHECKPOINT = "/app/models/MimicMotion_1-1.pth"
+ASPECT_RATIO = 9 / 16
 
 
 class BodyGenerator:
     """
-    Генерация тела по позе и референсному фото.
+    Generates video of a reference person performing poses from a source video.
 
-    На RunPod GPU: SVD-XT генерирует батчи по 25 кадров,
-    которые потом растягиваются на всю последовательность.
-    Локально: отправляет на RunPod API.
+    Uses MimicMotion (Tencent, ICML 2025):
+    - SVD-XT base with PoseNet + Temporal UNet
+    - Confidence-aware pose guidance
+    - Progressive latent fusion for arbitrary-length video
+    - 576x1024 resolution, up to 72 frames per chunk
     """
 
-    def __init__(self, model_name: str = "animate_anyone_2"):
-        self.model_name = model_name
-        self.model = None
+    def __init__(self):
+        self.pipeline = None
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        self.tile_size = 72
+        self.tile_overlap = 6
+        self.num_inference_steps = 25
+        self.guidance_scale = 2.0
+        self.noise_aug_strength = 0.02
+        self.seed = 42
+        self.resolution = 576
+        self.sample_stride = 1
 
     def load_model(self):
-        """Загрузить генеративную модель."""
-        is_runpod = os.environ.get("RUNPOD_POD_ID") is not None
+        """Load MimicMotion pipeline."""
+        from mimicmotion.utils.geglu_patch import patch_geglu_inplace
+        patch_geglu_inplace()
 
-        if self.model_name == "animate_anyone_2":
-            try:
-                from diffusers import StableVideoDiffusionPipeline
-                import torch
+        from mimicmotion.utils.loader import MimicMotionModel
+        from mimicmotion.pipelines.pipeline_mimicmotion import MimicMotionPipeline
 
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                    gc.collect()
+        prev_dtype = torch.get_default_dtype()
+        torch.set_default_dtype(torch.float16)
 
-                self.model = StableVideoDiffusionPipeline.from_pretrained(
-                    "stabilityai/stable-video-diffusion-img2vid-xt",
-                    torch_dtype=torch.float16,
-                    variant="fp16",
-                )
-                if torch.cuda.is_available():
-                    self.model.to("cuda")
-                    self.model.enable_model_cpu_offload()
+        try:
+            logger.info("[BodyGenerator] Loading MimicMotion pipeline...")
 
-                print(f"[BodyGenerator] Loaded SVD-XT on {'cuda' if torch.cuda.is_available() else 'cpu'}")
-            except (ImportError, Exception) as e:
-                print(f"[BodyGenerator] Model not available: {e}")
-                if is_runpod:
-                    raise RuntimeError(
-                        f"BodyGenerator failed to load on RunPod GPU: {e}. "
-                        "Check VRAM usage — other models may need to be unloaded first."
-                    )
-                print("[BodyGenerator] Will use RunPod API instead")
-                self.model_name = "runpod_api"
+            model = MimicMotionModel(MIMIC_BASE_MODEL)
+            if hasattr(torch.serialization, "safe_globals"):
+                checkpoint = torch.load(MIMIC_CHECKPOINT, map_location="cpu", weights_only=True)
+            else:
+                checkpoint = torch.load(MIMIC_CHECKPOINT, map_location="cpu")
+            model.load_state_dict(checkpoint, strict=False)
+            del checkpoint
+            gc.collect()
+
+            self.pipeline = MimicMotionPipeline(
+                vae=model.vae,
+                image_encoder=model.image_encoder,
+                unet=model.unet,
+                scheduler=model.noise_scheduler,
+                feature_extractor=model.feature_extractor,
+                pose_net=model.pose_net,
+            )
+            logger.info("[BodyGenerator] MimicMotion loaded successfully")
+        finally:
+            torch.set_default_dtype(prev_dtype)
 
     def unload_model(self):
-        """Выгрузить модель из GPU для освобождения VRAM."""
-        if self.model is not None:
-            del self.model
-            self.model = None
-
+        """Free GPU VRAM."""
+        if self.pipeline is not None:
+            del self.pipeline
+            self.pipeline = None
         gc.collect()
-        try:
-            import torch
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-        except ImportError:
-            pass
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     def generate_sequence(
         self,
         reference_image: np.ndarray,
-        pose_images: List[np.ndarray],
-        batch_size: int = 4,
+        video_frames: List[np.ndarray],
     ) -> List[np.ndarray]:
         """
-        Сгенерировать последовательность кадров.
+        Generate video of reference person in poses extracted from video_frames.
 
-        SVD-XT генерирует 25 кадров за вызов. Для длинных
-        последовательностей запускаем несколько батчей и
-        распределяем результаты равномерно по таймлайну.
+        MimicMotion handles DWPose extraction, pose rescaling, and generation internally.
+        Progressive latent fusion ensures smooth output for long sequences.
+
+        Args:
+            reference_image: BGR photo of the target person
+            video_frames: list of BGR frames from the source video (a single scene)
+
+        Returns:
+            list of BGR generated frames (same count as video_frames)
         """
-        if self.model is None:
+        if self.pipeline is None:
             self.load_model()
 
-        total_needed = len(pose_images)
-        if total_needed == 0:
+        if not video_frames:
             return []
 
-        if self.model_name == "runpod_api":
-            return self._generate_sequence_runpod(reference_image, pose_images)
+        ref_path = None
+        video_path = None
 
-        return self._generate_sequence_local(reference_image, total_needed)
+        try:
+            ref_path = tempfile.mktemp(suffix=".jpg")
+            cv2.imwrite(ref_path, reference_image)
 
-    def _generate_sequence_local(
-        self,
-        reference: np.ndarray,
-        total_needed: int,
-    ) -> List[np.ndarray]:
+            video_path = tempfile.mktemp(suffix=".mp4")
+            h, w = video_frames[0].shape[:2]
+            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+            writer = cv2.VideoWriter(video_path, fourcc, 30.0, (w, h))
+            for frame in video_frames:
+                writer.write(frame)
+            writer.release()
+
+            pose_pixels, image_pixels = self._preprocess(video_path, ref_path)
+
+            output_frames = self._run_pipeline(image_pixels, pose_pixels)
+
+            expected = len(video_frames)
+            if len(output_frames) > expected:
+                output_frames = output_frames[:expected]
+            elif len(output_frames) < expected:
+                pad = expected - len(output_frames)
+                output_frames.extend([output_frames[-1]] * pad)
+
+            logger.info(f"[BodyGenerator] Generated {len(output_frames)} frames")
+            return output_frames
+
+        finally:
+            for p in [ref_path, video_path]:
+                if p:
+                    try:
+                        os.unlink(p)
+                    except OSError:
+                        pass
+
+    def _preprocess(self, video_path: str, image_path: str):
         """
-        Локальная генерация через SVD-XT.
-        Генерирует батчи по 25 кадров и интерполирует между ними.
+        Preprocess reference image and video for MimicMotion.
+        Extracts DWPose skeletons with rescaling to match reference proportions.
         """
-        from PIL import Image
-        import torch
+        from torchvision.datasets.folder import pil_loader
+        from torchvision.transforms.functional import pil_to_tensor, resize, center_crop
+        from mimicmotion.dwpose.preprocess import get_video_pose, get_image_pose
 
-        ref_pil = Image.fromarray(cv2.cvtColor(reference, cv2.COLOR_BGR2RGB))
-        ref_pil = ref_pil.resize((512, 512))
+        image_pixels = pil_loader(image_path)
+        image_pixels = pil_to_tensor(image_pixels)
+        h, w = image_pixels.shape[-2:]
 
-        num_batches = max(1, (total_needed + SVD_XT_NUM_FRAMES - 1) // SVD_XT_NUM_FRAMES)
-        all_generated = []
+        if h > w:
+            w_target = self.resolution
+            h_target = int(self.resolution / ASPECT_RATIO // 64) * 64
+        else:
+            w_target = int(self.resolution / ASPECT_RATIO // 64) * 64
+            h_target = self.resolution
 
-        for batch_idx in range(num_batches):
-            print(f"[BodyGenerator] SVD batch {batch_idx + 1}/{num_batches}")
+        h_w_ratio = float(h) / float(w)
+        if h_w_ratio < h_target / w_target:
+            h_resize = h_target
+            w_resize = math.ceil(h_target / h_w_ratio)
+        else:
+            h_resize = math.ceil(w_target * h_w_ratio)
+            w_resize = w_target
 
-            try:
-                with torch.no_grad():
-                    output = self.model(
-                        image=ref_pil,
-                        num_frames=SVD_XT_NUM_FRAMES,
-                        decode_chunk_size=4,
-                        num_inference_steps=SVD_XT_INFERENCE_STEPS,
-                        motion_bucket_id=127,
-                    )
-                    frames_pil = output.frames[0]
+        image_pixels = resize(image_pixels, [h_resize, w_resize], antialias=None)
+        image_pixels = center_crop(image_pixels, [h_target, w_target])
+        image_pixels = image_pixels.permute((1, 2, 0)).numpy()
 
-                for frame_pil in frames_pil:
-                    frame_np = np.array(frame_pil)
-                    frame_bgr = cv2.cvtColor(frame_np, cv2.COLOR_RGB2BGR)
-                    all_generated.append(frame_bgr)
+        logger.info(f"[BodyGenerator] Extracting poses from video (stride={self.sample_stride})...")
+        image_pose = get_image_pose(image_pixels)
+        video_pose = get_video_pose(video_path, image_pixels, sample_stride=self.sample_stride)
 
-                print(f"[BodyGenerator] Batch {batch_idx + 1} done: {len(frames_pil)} frames")
+        pose_pixels = np.concatenate([np.expand_dims(image_pose, 0), video_pose])
+        pose_pixels = torch.from_numpy(pose_pixels.copy()) / 127.5 - 1
 
-            except Exception as e:
-                print(f"[BodyGenerator] SVD inference error in batch {batch_idx + 1}: {e}")
-                raise
+        image_pixels = np.transpose(np.expand_dims(image_pixels, 0), (0, 3, 1, 2))
+        image_pixels = torch.from_numpy(image_pixels) / 127.5 - 1
 
-        if len(all_generated) >= total_needed:
-            return all_generated[:total_needed]
+        logger.info(f"[BodyGenerator] Preprocessed: {pose_pixels.shape[0]} pose frames, "
+                     f"resolution {pose_pixels.shape[-2]}x{pose_pixels.shape[-1]}")
+        return pose_pixels, image_pixels
 
-        return self._stretch_to_length(all_generated, total_needed)
+    @torch.no_grad()
+    def _run_pipeline(self, image_pixels, pose_pixels) -> List[np.ndarray]:
+        """Run MimicMotion inference with progressive latent fusion."""
+        from torchvision.transforms.functional import to_pil_image
 
-    def _stretch_to_length(self, frames: List[np.ndarray], target_len: int) -> List[np.ndarray]:
-        """Растянуть/сжать набор кадров до нужной длины через линейную интерполяцию."""
-        if not frames or target_len <= 0:
-            return []
+        image_pil = [
+            to_pil_image(img.to(torch.uint8))
+            for img in (image_pixels + 1.0) * 127.5
+        ]
 
-        src_len = len(frames)
-        if src_len == target_len:
-            return frames
-        if src_len == 1:
-            return frames * target_len
+        num_frames = pose_pixels.size(0)
+        generator = torch.Generator(device=self.device)
+        generator.manual_seed(self.seed)
 
-        result = []
-        for i in range(target_len):
-            t = i / (target_len - 1) * (src_len - 1)
-            idx_low = int(t)
-            idx_high = min(idx_low + 1, src_len - 1)
-            alpha = t - idx_low
+        logger.info(f"[BodyGenerator] Running MimicMotion: {num_frames} frames, "
+                     f"tile_size={self.tile_size}, steps={self.num_inference_steps}")
 
-            if alpha < 0.01:
-                result.append(frames[idx_low])
-            elif alpha > 0.99:
-                result.append(frames[idx_high])
-            else:
-                blended = cv2.addWeighted(
-                    frames[idx_low], 1 - alpha,
-                    frames[idx_high], alpha,
-                    0,
-                )
-                result.append(blended)
+        frames = self.pipeline(
+            image_pil,
+            image_pose=pose_pixels,
+            num_frames=num_frames,
+            tile_size=self.tile_size,
+            tile_overlap=self.tile_overlap,
+            height=pose_pixels.shape[-2],
+            width=pose_pixels.shape[-1],
+            fps=7,
+            noise_aug_strength=self.noise_aug_strength,
+            num_inference_steps=self.num_inference_steps,
+            generator=generator,
+            min_guidance_scale=self.guidance_scale,
+            max_guidance_scale=self.guidance_scale,
+            decode_chunk_size=8,
+            output_type="pt",
+            device=self.device,
+        ).frames.cpu()
 
-        return result
+        video_tensor = (frames * 255.0).to(torch.uint8)
+        result_tensor = video_tensor[0, 1:]
 
-    def generate_frame(
-        self,
-        reference_image: np.ndarray,
-        pose_image: np.ndarray,
-        previous_frame: Optional[np.ndarray] = None,
-    ) -> np.ndarray:
-        """Сгенерировать один кадр (для RunPod API fallback)."""
-        if self.model is None:
-            self.load_model()
+        output = []
+        for i in range(result_tensor.shape[0]):
+            frame_rgb = result_tensor[i].permute(1, 2, 0).numpy()
+            frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+            output.append(frame_bgr)
 
-        if self.model_name == "runpod_api":
-            return self._generate_via_runpod(reference_image, pose_image, previous_frame)
-
-        frames = self._generate_sequence_local(reference_image, 1)
-        return frames[0] if frames else self._fallback_composite(reference_image, pose_image)
-
-    def _generate_sequence_runpod(
-        self,
-        reference: np.ndarray,
-        pose_images: List[np.ndarray],
-    ) -> List[np.ndarray]:
-        """Батчевая генерация через RunPod API."""
-        results = []
-        prev_frame = None
-
-        for i, pose in enumerate(pose_images):
-            frame = self._generate_via_runpod(reference, pose, prev_frame)
-            results.append(frame)
-            prev_frame = frame
-
-            if (i + 1) % 10 == 0:
-                print(f"[BodyGenerator] Generated {i + 1}/{len(pose_images)} frames via RunPod API")
-
-        return results
-
-    def _generate_via_runpod(
-        self,
-        reference: np.ndarray,
-        pose: np.ndarray,
-        prev: Optional[np.ndarray],
-    ) -> np.ndarray:
-        """Генерация через RunPod Serverless API."""
-        import base64
-        import httpx
-        from app.config import settings
-
-        _, ref_buf = cv2.imencode(".jpg", reference)
-        _, pose_buf = cv2.imencode(".png", pose)
-
-        ref_b64 = base64.b64encode(ref_buf).decode()
-        pose_b64 = base64.b64encode(pose_buf).decode()
-
-        payload = {
-            "input": {
-                "reference_image": ref_b64,
-                "pose_image": pose_b64,
-                "width": 512,
-                "height": 768,
-            }
-        }
-
-        if prev is not None:
-            _, prev_buf = cv2.imencode(".jpg", prev)
-            payload["input"]["previous_frame"] = base64.b64encode(prev_buf).decode()
-
-        endpoint_url = f"https://api.runpod.ai/v2/{settings.RUNPOD_ENDPOINT_ID}/runsync"
-        headers = {
-            "Authorization": f"Bearer {settings.RUNPOD_API_KEY}",
-            "Content-Type": "application/json",
-        }
-
-        response = httpx.post(endpoint_url, json=payload, headers=headers, timeout=120)
-        response.raise_for_status()
-
-        result = response.json()
-        output_b64 = result.get("output", {}).get("image", "")
-
-        if output_b64:
-            img_bytes = base64.b64decode(output_b64)
-            img_arr = np.frombuffer(img_bytes, dtype=np.uint8)
-            return cv2.imdecode(img_arr, cv2.IMREAD_COLOR)
-
-        return self._fallback_composite(reference, pose)
-
-    def _fallback_composite(self, reference: np.ndarray, pose: np.ndarray) -> np.ndarray:
-        """Простой compositing для тестирования без модели."""
-        h, w = pose.shape[:2]
-        ref_resized = cv2.resize(reference, (w, h))
-
-        mask = cv2.cvtColor(pose, cv2.COLOR_BGR2GRAY)
-        _, mask = cv2.threshold(mask, 10, 255, cv2.THRESH_BINARY)
-
-        result = ref_resized.copy()
-        result[mask > 0] = pose[mask > 0]
-
-        return result
+        return output
