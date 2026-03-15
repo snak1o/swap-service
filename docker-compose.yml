@@ -1,0 +1,52 @@
+services:
+  # --- API Server ---
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file: .env
+    volumes:
+      - ./uploads:/app/uploads
+      - ./results:/app/results
+      - ./web:/app/web
+      - ./app:/app/app
+    depends_on:
+      - redis
+      - minio
+
+  # --- Celery Worker ---
+  worker:
+    build: .
+    command: celery -A app.workers.celery_worker worker --loglevel=info --concurrency=1
+    env_file: .env
+    volumes:
+      - ./uploads:/app/uploads
+      - ./results:/app/results
+      - ./app:/app/app
+    depends_on:
+      - redis
+
+  # --- Redis ---
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+
+  # --- MinIO (S3-compatible storage) ---
+  minio:
+    image: minio/minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio-data:/data
+
+volumes:
+  redis-data:
+  minio-data:

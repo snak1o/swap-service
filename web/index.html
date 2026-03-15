@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Full-Body Swap — AI Video Replacement</title>
+    <meta name="description" content="Перенос персонажа с фото на видео с AI">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="app">
+        <!-- Header -->
+        <header class="header">
+            <div class="header__logo">
+                <div class="header__icon">🔄</div>
+                <h1 class="header__title">BodySwap<span class="header__accent">AI</span></h1>
+            </div>
+            <div class="header__badge">MVP v0.1</div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="main">
+            <!-- Upload Section -->
+            <section id="upload-section" class="section upload-section">
+                <h2 class="section__title">Загрузите материалы</h2>
+                <p class="section__desc">Фото целевого персонажа и исходное видео</p>
+
+                <div class="upload-grid">
+                    <!-- Photo Upload -->
+                    <div class="upload-card" id="photo-card">
+                        <input type="file" id="photo-input" accept="image/jpeg,image/png,image/webp" hidden>
+                        <div class="upload-card__dropzone" id="photo-dropzone">
+                            <div class="upload-card__icon">📸</div>
+                            <div class="upload-card__label">Фото персонажа</div>
+                            <div class="upload-card__hint">JPG, PNG, WebP — полный рост</div>
+                            <img id="photo-preview" class="upload-card__preview" alt="preview" hidden>
+                        </div>
+                    </div>
+
+                    <!-- Video Upload -->
+                    <div class="upload-card" id="video-card">
+                        <input type="file" id="video-input" accept="video/mp4,video/mov,video/avi,video/webm" hidden>
+                        <div class="upload-card__dropzone" id="video-dropzone">
+                            <div class="upload-card__icon">🎬</div>
+                            <div class="upload-card__label">Исходное видео</div>
+                            <div class="upload-card__hint">MP4, MOV, AVI — до 2 мин</div>
+                            <video id="video-preview" class="upload-card__preview" controls hidden></video>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Options -->
+                <details class="options">
+                    <summary class="options__toggle">⚙️ Настройки обработки</summary>
+                    <div class="options__grid">
+                        <label class="option">
+                            <input type="checkbox" id="opt-scene" checked>
+                            <span>Автоматическое разбиение на сцены</span>
+                        </label>
+                        <label class="option">
+                            <input type="checkbox" id="opt-smooth" checked>
+                            <span>Temporal smoothing</span>
+                        </label>
+                        <label class="option">
+                            <input type="checkbox" id="opt-upscale">
+                            <span>Upscale 2x (медленнее)</span>
+                        </label>
+                        <label class="option">
+                            <span>Skip frames:</span>
+                            <input type="number" id="opt-skip" value="0" min="0" max="10" class="option__input">
+                        </label>
+                    </div>
+                </details>
+
+                <!-- Submit Button -->
+                <button id="submit-btn" class="btn btn--primary" disabled>
+                    <span class="btn__text">🚀 Начать обработку</span>
+                </button>
+            </section>
+
+            <!-- Processing Section -->
+            <section id="processing-section" class="section processing-section" hidden>
+                <h2 class="section__title">Обработка</h2>
+
+                <div class="progress-card">
+                    <div class="progress-bar">
+                        <div class="progress-bar__fill" id="progress-fill"></div>
+                    </div>
+                    <div class="progress-info">
+                        <span class="progress-info__step" id="progress-step">Ожидание...</span>
+                        <span class="progress-info__percent" id="progress-percent">0%</span>
+                    </div>
+                    <div class="progress-message" id="progress-message"></div>
+
+                    <!-- Pipeline Steps -->
+                    <div class="pipeline-steps" id="pipeline-steps">
+                        <div class="step" data-step="pending">
+                            <div class="step__dot"></div>
+                            <span>Загрузка</span>
+                        </div>
+                        <div class="step" data-step="pose_extraction">
+                            <div class="step__dot"></div>
+                            <span>Pose extraction</span>
+                        </div>
+                        <div class="step" data-step="segmentation">
+                            <div class="step__dot"></div>
+                            <span>Сегментация</span>
+                        </div>
+                        <div class="step" data-step="body_generation">
+                            <div class="step__dot"></div>
+                            <span>Body generation</span>
+                        </div>
+                        <div class="step" data-step="face_refinement">
+                            <div class="step__dot"></div>
+                            <span>Face refinement</span>
+                        </div>
+                        <div class="step" data-step="compositing">
+                            <div class="step__dot"></div>
+                            <span>Compositing</span>
+                        </div>
+                        <div class="step" data-step="post_processing">
+                            <div class="step__dot"></div>
+                            <span>Post-processing</span>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Result Section -->
+            <section id="result-section" class="section result-section" hidden>
+                <h2 class="section__title">✅ Результат</h2>
+
+                <div class="result-card">
+                    <video id="result-video" class="result-video" controls></video>
+                    <div class="result-actions">
+                        <a id="result-download" class="btn btn--primary" download>
+                            📥 Скачать видео
+                        </a>
+                        <button id="new-job-btn" class="btn btn--secondary">
+                            🔄 Новая задача
+                        </button>
+                    </div>
+                    <div class="result-meta" id="result-meta"></div>
+                </div>
+            </section>
+
+            <!-- Error Section -->
+            <section id="error-section" class="section error-section" hidden>
+                <div class="error-card">
+                    <div class="error-card__icon">❌</div>
+                    <h3>Ошибка обработки</h3>
+                    <p id="error-message"></p>
+                    <button id="retry-btn" class="btn btn--secondary">Попробовать снова</button>
+                </div>
+            </section>
+        </main>
+
+        <!-- Footer -->
+        <footer class="footer">
+            <span>BodySwapAI — Internal Tool</span>
+        </footer>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
