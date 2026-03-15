@@ -143,6 +143,19 @@ class BackgroundSegmenter:
         clean = cv2.inpaint(frame, dilated_mask, inpaintRadius=7, flags=cv2.INPAINT_TELEA)
         return clean
 
+    def unload_model(self):
+        """Выгрузить модель из GPU для освобождения VRAM."""
+        if self.model is not None:
+            del self.model
+            self.model = None
+
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except ImportError:
+            pass
+
     def segment_video_frames(
         self,
         frames: List[np.ndarray],

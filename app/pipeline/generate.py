@@ -26,12 +26,16 @@ class BodyGenerator:
 
     def load_model(self):
         """Загрузить генеративную модель."""
+        import os
+        is_runpod = os.environ.get("RUNPOD_POD_ID") is not None
+
         if self.model_name == "animate_anyone_2":
             try:
-                # Animate Anyone 2 pipeline
-                # Requires: pip install diffusers accelerate
                 from diffusers import StableVideoDiffusionPipeline
                 import torch
+
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
                 self.model = StableVideoDiffusionPipeline.from_pretrained(
                     "stabilityai/stable-video-diffusion-img2vid-xt",
@@ -43,6 +47,12 @@ class BodyGenerator:
                 print("[BodyGenerator] Loaded model on GPU")
             except (ImportError, Exception) as e:
                 print(f"[BodyGenerator] Model not available: {e}")
+                if is_runpod:
+                    raise RuntimeError(
+                        f"BodyGenerator failed to load on RunPod GPU: {e}. "
+                        "Check VRAM usage — other models (DWPose, SAM2) may need "
+                        "to be unloaded first."
+                    )
                 print("[BodyGenerator] Will use RunPod API instead")
                 self.model_name = "runpod_api"
 

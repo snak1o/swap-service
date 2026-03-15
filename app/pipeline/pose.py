@@ -214,6 +214,24 @@ class PoseExtractor:
         cap.release()
         return poses
 
+    def unload_model(self):
+        """Выгрузить модель из GPU для освобождения VRAM."""
+        if self.model is not None:
+            if self.model_name == "mediapipe":
+                try:
+                    self.model.close()
+                except Exception:
+                    pass
+            del self.model
+            self.model = None
+
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except ImportError:
+            pass
+
     def save_poses(self, poses: List[Dict[str, Any]], output_dir: str):
         """Сохранить pose images для передачи в генератор."""
         out_path = Path(output_dir)

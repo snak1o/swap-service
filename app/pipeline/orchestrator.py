@@ -148,6 +148,10 @@ class SwapOrchestrator:
             bboxes = [p["bbox"] if p else None for p in poses]
             masks, backgrounds = self.segmenter.segment_video_frames(seg_frames, bboxes)
 
+            # Free GPU VRAM before heavy body generation
+            self.pose_extractor.unload_model()
+            self.segmenter.unload_model()
+
             report("body_generation", base_progress + seg_weight * 0.35,
                    f"Segment {seg_idx + 1}: Generating body frames")
 
