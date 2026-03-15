@@ -25,7 +25,7 @@ class FaceRefiner:
         try:
             from gfpgan import GFPGANer
             self.face_enhancer = GFPGANer(
-                model_path="GFPGANv1.4.pth",
+                model_path="/app/models/GFPGANv1.4.pth",
                 upscale=1,
                 arch="clean",
                 channel_multiplier=2,

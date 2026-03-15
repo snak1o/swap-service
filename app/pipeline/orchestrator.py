@@ -181,6 +181,9 @@ class SwapOrchestrator:
                     # Pad if too few (should not happen with good interpolator)
                     generated.extend([generated[-1]] * (len(seg_frames) - len(generated)))
 
+            # Free generator VRAM before face refinement
+            self.generator.unload_model()
+
             report("face_refinement", base_progress + seg_weight * 0.65,
                    f"Segment {seg_idx + 1}: Refining faces")
 

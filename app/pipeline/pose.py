@@ -225,6 +225,8 @@ class PoseExtractor:
             del self.model
             self.model = None
 
+        import gc
+        gc.collect()
         try:
             import torch
             if torch.cuda.is_available():

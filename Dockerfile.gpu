@@ -6,11 +6,13 @@ FROM runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04
 
 WORKDIR /app
 
-# System deps
+# System deps + cuDNN 8 for onnxruntime-gpu
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     libgl1-mesa-glx \
     libglib2.0-0 \
+    libcudnn8 \
+    libcudnn8-dev \
     git \
     wget \
     && rm -rf /var/lib/apt/lists/*
@@ -24,10 +26,11 @@ RUN pip install --no-cache-dir \
     git+https://github.com/facebookresearch/segment-anything-2.git \
     easy-dwpose \
     insightface \
-    onnxruntime-gpu \
+    onnxruntime-gpu==1.16.3 \
     diffusers \
     accelerate \
-    transformers
+    transformers \
+    gfpgan
 
 # Ensure no CPU onnxruntime is present
 RUN pip uninstall -y onnxruntime || true

@@ -25,16 +25,15 @@ class BackgroundSegmenter:
             try:
                 from sam2.build_sam import build_sam2
                 from sam2.sam2_image_predictor import SAM2ImagePredictor
-                
-                # SAM 2 setup — requires downloaded weights and model config name
-                model_cfg = "configs/sam2.1/sam2.1_hiera_l.yaml"
+
                 checkpoint = "/app/models/sam2.1_hiera_large.pt"
-                
+                model_cfg = "sam2.1_hiera_l"
+
                 sam2_model = build_sam2(model_cfg, checkpoint, device="cuda")
                 self.model = SAM2ImagePredictor(sam2_model)
                 print("[Segmenter] Loaded SAM 2.1 Hiera Large")
-            except (ImportError, FileNotFoundError):
-                print("[Segmenter] SAM 2 not available, using fallback")
+            except Exception as e:
+                print(f"[Segmenter] SAM 2 not available ({e}), using fallback")
                 self.model_name = "fallback"
         else:
             self.model_name = "fallback"
@@ -149,6 +148,8 @@ class BackgroundSegmenter:
             del self.model
             self.model = None
 
+        import gc
+        gc.collect()
         try:
             import torch
             if torch.cuda.is_available():
