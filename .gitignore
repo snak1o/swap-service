@@ -1,49 +1,7 @@
-# Python
 __pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-env/
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-share/python-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
-venv/
-.venv/
-
-# Environment variables (contains secrets!)
+*.pyc
 .env
-
-# Project specific
-results/
-uploads/
-temp/
+*.mp4
+*.jpg
+*.png
 .DS_Store
-.idea/
-.vscode/
-
-# Models (never push, stored on Network Volume)
-models/
-*.pt
-*.pth
-*.onnx
-*.safetensors
-*.bin
-
-# OS
-Thumbs.db
-nul
