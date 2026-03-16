@@ -22,13 +22,28 @@ share/python-wheels/
 .installed.cfg
 *.egg
 MANIFEST
+venv/
+.venv/
 
-# Environment variables
+# Environment variables (contains secrets!)
 .env
 
 # Project specific
 results/
 uploads/
+temp/
 .DS_Store
 .idea/
 .vscode/
+
+# Models (never push, stored on Network Volume)
+models/
+*.pt
+*.pth
+*.onnx
+*.safetensors
+*.bin
+
+# OS
+Thumbs.db
+nul

@@ -14,12 +14,12 @@ from app.pipeline.composite import Compositor
 
 class SwapOrchestrator:
     """
-    Full-body swap pipeline:
+    Full-body swap pipeline (Wan2.2-Animate-14B Replace mode):
 
     1. Scene detection (split video by hard cuts)
     2. For each scene independently:
        a. Segment original frames -> clean backgrounds + person masks
-       b. MimicMotion: generate reference person in source poses
+       b. Wan2.2-Animate-14B Replace: generate video with replaced person
        c. Resize generated frames to original resolution
        d. Face refinement (InsightFace swap + GFPGAN)
        e. Composite generated person onto original background
@@ -86,9 +86,9 @@ class SwapOrchestrator:
             masks, backgrounds = self.segmenter.segment_video_frames(seg_frames)
             self.segmenter.unload_model()
 
-            # --- Step 2: Generate with MimicMotion ---
+            # --- Step 2: Generate with Wan2.2-Animate-14B Replace ---
             report("body_generation", base_progress + seg_weight * 0.2,
-                   f"Segment {seg_idx + 1}/{total_segments}: MimicMotion generating ({seg_count} frames)")
+                   f"Segment {seg_idx + 1}/{total_segments}: Wan2.2 Replace generating ({seg_count} frames)")
 
             generated = self.generator.generate_sequence(reference, seg_frames)
             self.generator.unload_model()

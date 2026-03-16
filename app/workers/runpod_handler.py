@@ -1,8 +1,8 @@
 """
 RunPod Serverless Handler — GPU Worker для full-body swap.
 
-Этот Docker-образ разворачивается на RunPod Serverless.
-Содержит все AI-модели и выполняет тяжёлую GPU-обработку.
+Wan2.2-Animate-14B (Replace mode) — полная замена персонажа в видео.
+Models stored on RunPod Network Volume (/runpod-volume/models/).
 
 Принимает:
 - reference_image (base64)
@@ -38,13 +38,13 @@ def encode_image(image: np.ndarray, fmt: str = ".jpg") -> str:
 def handler(event: dict) -> dict:
     """
     RunPod serverless handler.
-    
+
     Input:
-        reference_image: base64-encoded photo
+        reference_image: base64-encoded photo of the new character
         pose_images: list of base64-encoded pose skeleton images
         mode: "single_frame" | "full_video" | "batch_frames"
         options: dict with processing options
-        
+
     Output:
         frames: list of base64-encoded result frames
         status: "success" | "error"
@@ -74,7 +74,7 @@ def handler(event: dict) -> dict:
 
 
 def _process_single_frame(reference: np.ndarray, job_input: dict) -> dict:
-    """Обработка одного кадра: pose → body generation → face refinement."""
+    """Обработка одного кадра: Wan2.2 Replace + face refinement."""
     from app.pipeline.generate import BodyGenerator
     from app.pipeline.face import FaceRefiner
 
@@ -84,8 +84,8 @@ def _process_single_frame(reference: np.ndarray, job_input: dict) -> dict:
 
     pose = decode_image(pose_b64)
 
-    # Generate body
-    generator = BodyGenerator(model_name="animate_anyone_2")
+    # Generate body via Wan2.2
+    generator = BodyGenerator()
     generated = generator.generate_frame(reference, pose)
 
     # Refine face
@@ -99,7 +99,7 @@ def _process_single_frame(reference: np.ndarray, job_input: dict) -> dict:
 
 
 def _process_batch_frames(reference: np.ndarray, job_input: dict) -> dict:
-    """Обработка батча кадров."""
+    """Обработка батча кадров через Wan2.2 Replace."""
     from app.pipeline.generate import BodyGenerator
     from app.pipeline.face import FaceRefiner
 
@@ -109,7 +109,7 @@ def _process_batch_frames(reference: np.ndarray, job_input: dict) -> dict:
 
     poses = [decode_image(b64) for b64 in pose_images_b64]
 
-    generator = BodyGenerator(model_name="animate_anyone_2")
+    generator = BodyGenerator()
     generated = generator.generate_sequence(reference, poses)
 
     refiner = FaceRefiner()
@@ -125,7 +125,7 @@ def _process_batch_frames(reference: np.ndarray, job_input: dict) -> dict:
 
 
 def _process_full_video(reference: np.ndarray, job_input: dict) -> dict:
-    """Полная обработка видео на GPU (все этапы)."""
+    """Полная обработка видео на GPU (все этапы через Wan2.2 Replace)."""
     from app.pipeline.orchestrator import SwapOrchestrator
 
     video_b64 = job_input.get("video_base64")

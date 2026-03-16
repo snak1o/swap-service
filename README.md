@@ -1,6 +1,7 @@
 # BodySwapAI — Full-Body Swap Service
 
-> Перенос персонажа с фото на видео с повторением всех движений 1 в 1.
+> Полная замена персонажа в видео с помощью **Wan2.2-Animate-14B** (Replace mode).
+> Кинематографическое качество: адаптация к освещению, сохранение движений и выражений лица.
 
 ## 🚀 Быстрый старт
 
@@ -11,7 +12,7 @@ cd swap-service
 cp .env.example .env   # или отредактировать существующий .env
 ```
 
-### 2. Запуск через Docker Compose
+### 2. Запуск через Docker Compose (API + Redis + MinIO)
 
 ```bash
 docker compose up -d
@@ -49,9 +50,8 @@ swap-service/
 │   │   └── schemas.py        # Pydantic models
 │   ├── pipeline/
 │   │   ├── orchestrator.py   # Pipeline coordinator
-│   │   ├── pose.py           # Pose extraction (DWPose)
+│   │   ├── generate.py       # Wan2.2-Animate-14B Replace
 │   │   ├── segment.py        # Background segmentation (SAM 2)
-│   │   ├── generate.py       # Body generation (Animate Anyone 2)
 │   │   ├── face.py           # Face swap + enhancement
 │   │   └── composite.py      # Video compositing + assembly
 │   ├── workers/
@@ -62,7 +62,9 @@ swap-service/
 ├── web/                      # Web UI
 ├── docker-compose.yml        # Local stack
 ├── Dockerfile                # API server image
-├── Dockerfile.gpu            # RunPod GPU worker image
+├── Dockerfile.gpu            # RunPod GPU worker image (Wan2.2)
+├── start.sh                  # GPU worker entrypoint
+├── download_models.py        # One-time model download to Network Volume
 └── .env                      # Environment config
 ```
 
@@ -78,17 +80,15 @@ swap-service/
 
 ## ☁️ RunPod Deployment
 
+Подробная инструкция: [README_runpod_setup.md](README_runpod_setup.md)
+
 ```bash
-# Собрать GPU-образ
-docker build -f Dockerfile.gpu -t bodyswap-gpu:latest .
+# Собрать GPU-образ (лёгкий, без моделей)
+docker build -f Dockerfile.gpu -t bodyswap-gpu:wan22 .
 
-# Запушить в Docker Hub / GHCR
-docker tag bodyswap-gpu:latest your-registry/bodyswap-gpu:latest
-docker push your-registry/bodyswap-gpu:latest
-
-# Создать Serverless Endpoint на RunPod Dashboard
-# → Image: your-registry/bodyswap-gpu:latest
-# → GPU: A40 или A100
+# Запушить в Docker Hub
+docker tag bodyswap-gpu:wan22 snak1o/bodyswap-gpu:wan22
+docker push snak1o/bodyswap-gpu:wan22
 ```
 
 ## ⚙️ Environment Variables
@@ -97,7 +97,12 @@ docker push your-registry/bodyswap-gpu:latest
 |----------|---------|-------------|
 | `RUNPOD_API_KEY` | — | RunPod API key |
 | `RUNPOD_ENDPOINT_ID` | — | RunPod serverless endpoint ID |
+| `MODELS_DIR` | `/runpod-volume/models` | Path to models on Network Volume |
+| `WAN_MODEL_NAME` | `Wan-AI/Wan2.2-Animate-14B` | HuggingFace model name |
+| `WAN_REPLACE_FLAG` | `true` | Use Replace mode |
+| `WAN_USE_RELIGHTING_LORA` | `true` | Adapt lighting to scene |
+| `WAN_OFFLOAD_MODEL` | `false` | Enable model offloading (for smaller GPUs) |
+| `WAN_RESOLUTION_W` | `1280` | Output width |
+| `WAN_RESOLUTION_H` | `720` | Output height |
 | `REDIS_URL` | `redis://localhost:6379/0` | Redis connection |
-| `MINIO_ENDPOINT` | `localhost:9000` | MinIO endpoint |
 | `MAX_VIDEO_DURATION_SEC` | `120` | Max video length |
-| `SKIP_FRAMES` | `0` | Process every Nth frame |

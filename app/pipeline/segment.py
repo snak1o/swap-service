@@ -1,5 +1,6 @@
 """Модуль сегментации — отделение человека от фона (SAM 2)."""
 
+import os
 from pathlib import Path
 from typing import List, Tuple, Optional
 
@@ -10,7 +11,7 @@ import numpy as np
 class BackgroundSegmenter:
     """
     Сегментация человека и фона.
-    
+
     - На RunPod: SAM 2 для точной сегментации
     - Локально: GrabCut / простая фоновая модель как fallback
     """
@@ -19,6 +20,11 @@ class BackgroundSegmenter:
         self.model_name = model_name
         self.model = None
 
+    def _get_sam2_checkpoint(self) -> str:
+        """Get SAM2 checkpoint path from config (not hardcoded)."""
+        from app.config import settings
+        return os.path.join(settings.MODELS_DIR, "sam2.1_hiera_large.pt")
+
     def load_model(self):
         """Загрузить модель сегментации."""
         if self.model_name == "sam2":
@@ -26,12 +32,14 @@ class BackgroundSegmenter:
                 from sam2.build_sam import build_sam2
                 from sam2.sam2_image_predictor import SAM2ImagePredictor
 
-                checkpoint = "/app/models/sam2.1_hiera_large.pt"
-                model_cfg = "sam2.1_hiera_l"
+                checkpoint = self._get_sam2_checkpoint()
+                model_cfg = "configs/sam2.1/sam2.1_hiera_l"
 
                 sam2_model = build_sam2(model_cfg, checkpoint, device="cuda")
                 self.model = SAM2ImagePredictor(sam2_model)
-                print("[Segmenter] Loaded SAM 2.1 Hiera Large")
+                import logging
+                logging.getLogger("sam2.sam2_image_predictor").setLevel(logging.WARNING)
+                print(f"[Segmenter] Loaded SAM 2.1 Hiera Large from {checkpoint}")
             except Exception as e:
                 print(f"[Segmenter] SAM 2 not available ({e}), using fallback")
                 self.model_name = "fallback"
@@ -45,11 +53,11 @@ class BackgroundSegmenter:
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
         Сегментировать кадр: разделить на person_mask и clean_background.
-        
+
         Args:
             frame: BGR кадр
             bbox: [x1, y1, x2, y2] bounding box человека (из pose)
-            
+
         Returns:
             (person_mask, clean_background)
             - person_mask: uint8 маска (255=person, 0=background)
@@ -90,7 +98,7 @@ class BackgroundSegmenter:
         else:
             mask = (masks[0, 0] * 255).astype(np.uint8) if masks.ndim == 4 else (masks * 255).astype(np.uint8)
             while mask.ndim > 2: mask = mask[0]
-            
+
         return mask
 
     def _segment_fallback(self, frame: np.ndarray, bbox: Optional[List[float]]) -> np.ndarray:

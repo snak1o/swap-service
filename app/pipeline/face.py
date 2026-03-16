@@ -1,5 +1,6 @@
 """Модуль улучшения лица — GFPGAN + InsightFace swap."""
 
+import os
 from typing import Optional
 
 import cv2
@@ -19,18 +20,30 @@ class FaceRefiner:
         self.face_swapper = None
         self.face_analyzer = None
 
+    def _get_gfpgan_path(self) -> str:
+        """Get GFPGAN model path from config (not hardcoded)."""
+        from app.config import settings
+        return os.path.join(settings.MODELS_DIR, "GFPGANv1.4.pth")
+
+    def _get_insightface_root(self) -> str:
+        """Get InsightFace root dir from config (not hardcoded)."""
+        from app.config import settings
+        return os.path.join(settings.MODELS_DIR, "insightface")
+
     def load_models(self):
         """Загрузить модели для face processing."""
         # GFPGAN for face enhancement
         try:
             from gfpgan import GFPGANer
+
+            gfpgan_path = self._get_gfpgan_path()
             self.face_enhancer = GFPGANer(
-                model_path="/app/models/GFPGANv1.4.pth",
+                model_path=gfpgan_path,
                 upscale=1,
                 arch="clean",
                 channel_multiplier=2,
             )
-            print("[FaceRefiner] Loaded GFPGAN")
+            print(f"[FaceRefiner] Loaded GFPGAN from {gfpgan_path}")
         except (ImportError, Exception) as e:
             print(f"[FaceRefiner] GFPGAN not available: {e}")
 
@@ -39,8 +52,12 @@ class FaceRefiner:
             import insightface
             from insightface.app import FaceAnalysis
 
+            insightface_root = self._get_insightface_root()
+            os.environ["INSIGHTFACE_HOME"] = insightface_root
+
             self.face_analyzer = FaceAnalysis(
                 name="buffalo_l",
+                root=insightface_root,
                 providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
             )
             self.face_analyzer.prepare(ctx_id=0, det_size=(640, 640))
@@ -61,16 +78,16 @@ class FaceRefiner:
     ) -> np.ndarray:
         """
         Улучшить лицо в сгенерированном кадре.
-        
+
         1. Найти лицо в reference_photo -> извлечь face embedding
         2. Найти лицо в generated_frame
         3. Заменить лицо (swap) для точной идентичности
         4. Улучшить качество лица (enhance)
-        
+
         Args:
             generated_frame: сгенерированный кадр тела
             reference_photo: оригинальное фото целевого человека
-            
+
         Returns:
             кадр с улучшенным лицом
         """

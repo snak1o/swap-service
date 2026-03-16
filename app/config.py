@@ -12,7 +12,7 @@ class Settings:
 
     # --- App ---
     APP_NAME: str = "Full-Body Swap Service"
-    APP_VERSION: str = "0.1.0"
+    APP_VERSION: str = "2.0.0"
     DEBUG: bool = os.getenv("DEBUG", "true").lower() == "true"
 
     # --- API ---
@@ -37,11 +37,33 @@ class Settings:
     RUNPOD_API_KEY: str = os.getenv("RUNPOD_API_KEY", "")
     RUNPOD_ENDPOINT_ID: str = os.getenv("RUNPOD_ENDPOINT_ID", "")
 
+    # --- Models (Network Volume) ---
+    MODELS_DIR: str = os.getenv("MODELS_DIR", "/runpod-volume/models")
+
+    # --- Wan2.2-Animate-14B ---
+    WAN_MODEL_NAME: str = os.getenv("WAN_MODEL_NAME", "Wan-AI/Wan2.2-Animate-14B")
+    WAN_CKPT_DIR: str = os.getenv(
+        "WAN_CKPT_DIR",
+        os.path.join(os.getenv("MODELS_DIR", "/runpod-volume/models"), "Wan2.2-Animate-14B"),
+    )
+    WAN_RESOLUTION_W: int = int(os.getenv("WAN_RESOLUTION_W", "1280"))
+    WAN_RESOLUTION_H: int = int(os.getenv("WAN_RESOLUTION_H", "720"))
+    WAN_REPLACE_FLAG: bool = os.getenv("WAN_REPLACE_FLAG", "true").lower() == "true"
+    WAN_USE_RELIGHTING_LORA: bool = os.getenv("WAN_USE_RELIGHTING_LORA", "true").lower() == "true"
+    WAN_OFFLOAD_MODEL: bool = os.getenv("WAN_OFFLOAD_MODEL", "false").lower() == "true"
+    WAN_REFERT_NUM: int = int(os.getenv("WAN_REFERT_NUM", "1"))
+    WAN_PREPROCESS_ITERATIONS: int = int(os.getenv("WAN_PREPROCESS_ITERATIONS", "3"))
+    WAN_PREPROCESS_K: int = int(os.getenv("WAN_PREPROCESS_K", "7"))
+
+    # --- HuggingFace ---
+    HF_TOKEN: str = os.getenv("HF_TOKEN", "")
+
     # --- Paths ---
     BASE_DIR: Path = Path(__file__).resolve().parent.parent
     UPLOAD_DIR: Path = BASE_DIR / "uploads"
     RESULTS_DIR: Path = BASE_DIR / "results"
     TEMP_DIR: Path = BASE_DIR / "temp"
+    WAN_REPO_DIR: str = os.getenv("WAN_REPO_DIR", "/app/Wan2.2")
 
     # --- Processing ---
     MAX_VIDEO_DURATION_SEC: int = int(os.getenv("MAX_VIDEO_DURATION_SEC", "120"))
