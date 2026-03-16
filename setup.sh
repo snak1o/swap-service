@@ -18,7 +18,8 @@ echo ""
 
 # --- 1. Python зависимости ---
 echo "[1/4] Устанавливаю зависимости..."
-pip install -q flask gunicorn huggingface_hub[cli] pillow tqdm
+pip install -q --ignore-installed flask gunicorn pillow tqdm
+pip install -q huggingface_hub
 
 # --- 2. Wan2.2 repo (код) ---
 if [ -d "${WAN_REPO}" ]; then
