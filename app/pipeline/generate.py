@@ -1,4 +1,9 @@
-"""Body generation using Wan2.2-Animate-14B — Replace mode for full-body swap."""
+"""
+Wan2.2-Animate-14B Replace — полная замена персонажа в видео.
+
+Простой pipeline:
+  Фото (reference) + Видео (source) → Wan2.2 Replace → Готовое видео
+"""
 
 import gc
 import logging
@@ -8,244 +13,197 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import List, Optional
-
-import cv2
-import numpy as np
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
 
-class BodyGenerator:
+class WanReplace:
     """
-    Generates video with replaced person using Wan2.2-Animate-14B (Replace mode).
+    Wan2.2-Animate-14B Replace mode.
 
-    Pipeline:
-    1. Preprocessing: extract skeleton, face encoding, poses from source video
-    2. Inference: generate video with replaced character via Wan2.2 Animate
-    3. Output: BGR frames with replaced person
-
-    All paths and settings come from config (not hardcoded).
+    Вход: фото целевого человека + видео с исходным человеком
+    Выход: видео где исходный человек заменён на целевого
     """
 
     def __init__(self):
         from app.config import settings
-
         self.settings = settings
         self.wan_repo_dir = settings.WAN_REPO_DIR
         self.ckpt_dir = settings.WAN_CKPT_DIR
-        self.resolution_w = settings.WAN_RESOLUTION_W
-        self.resolution_h = settings.WAN_RESOLUTION_H
-        self.replace_flag = settings.WAN_REPLACE_FLAG
-        self.use_relighting_lora = settings.WAN_USE_RELIGHTING_LORA
-        self.offload_model = settings.WAN_OFFLOAD_MODEL
-        self.refert_num = settings.WAN_REFERT_NUM
-        self.preprocess_iterations = settings.WAN_PREPROCESS_ITERATIONS
-        self.preprocess_k = settings.WAN_PREPROCESS_K
 
-    def generate_sequence(
+    def replace(
         self,
-        reference_image: np.ndarray,
-        video_frames: List[np.ndarray],
-    ) -> List[np.ndarray]:
+        photo_path: str,
+        video_path: str,
+        output_path: str,
+    ) -> str:
         """
-        Generate video with replaced person using Wan2.2 Animate Replace mode.
+        Заменить персонажа в видео.
 
         Args:
-            reference_image: BGR photo of the target person (new character)
-            video_frames: list of BGR frames from the source video
+            photo_path: путь к фото нового персонажа
+            video_path: путь к исходному видео
+            output_path: путь для результата
 
         Returns:
-            list of BGR frames with replaced person
+            путь к готовому видео
         """
-        if not video_frames:
-            return []
-
-        work_dir = tempfile.mkdtemp(prefix="wan_swap_")
+        work_dir = tempfile.mkdtemp(prefix="wan_replace_")
 
         try:
-            # Save reference image
-            ref_path = os.path.join(work_dir, "reference.jpg")
-            cv2.imwrite(ref_path, reference_image)
-
-            # Save source video from frames
-            video_path = os.path.join(work_dir, "source.mp4")
-            self._save_frames_to_video(video_frames, video_path)
-
-            # Step 1: Preprocessing
-            preprocess_dir = os.path.join(work_dir, "process_results")
-            self._run_preprocessing(video_path, ref_path, preprocess_dir)
+            # Step 1: Preprocessing (skeleton, face encoding, pose)
+            preprocess_dir = os.path.join(work_dir, "preprocess")
+            self._preprocess(video_path, photo_path, preprocess_dir)
 
             # Step 2: Wan2.2 Inference (Replace mode)
-            output_dir = os.path.join(work_dir, "output")
-            self._run_inference(preprocess_dir, output_dir)
+            gen_dir = os.path.join(work_dir, "generated")
+            self._generate(preprocess_dir, gen_dir)
 
-            # Step 3: Read generated frames
-            output_frames = self._read_output_frames(output_dir, len(video_frames))
+            # Step 3: Собрать результат
+            result = self._collect_result(gen_dir, output_path, video_path)
 
-            logger.info(f"[BodyGenerator] Generated {len(output_frames)} frames via Wan2.2 Replace")
-            return output_frames
+            logger.info(f"[WanReplace] Done! Result: {result}")
+            return result
 
         finally:
-            # Cleanup work directory
             shutil.rmtree(work_dir, ignore_errors=True)
+            self._cleanup_gpu()
 
-    def _save_frames_to_video(self, frames: List[np.ndarray], output_path: str):
-        """Save BGR frames to an MP4 video file."""
-        from app.config import settings
-
-        h, w = frames[0].shape[:2]
-        fps = float(settings.TARGET_FPS)
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        writer = cv2.VideoWriter(output_path, fourcc, fps, (w, h))
-
-        for frame in frames:
-            writer.write(frame)
-        writer.release()
-
-        logger.info(f"[BodyGenerator] Saved {len(frames)} frames to {output_path} ({w}x{h}, {fps}fps)")
-
-    def _run_preprocessing(self, video_path: str, ref_path: str, save_path: str):
-        """
-        Run Wan2.2-Animate preprocessing: skeleton extraction, face encoding, pose retargeting.
-
-        Calls: wan/modules/animate/preprocess/preprocess_data.py
-        """
+    def _preprocess(self, video_path: str, photo_path: str, save_path: str):
+        """Wan2.2 preprocessing: скелет, face encoding, позы."""
         os.makedirs(save_path, exist_ok=True)
+        s = self.settings
 
-        preprocess_script = os.path.join(
-            self.wan_repo_dir, "wan", "modules", "animate", "preprocess", "preprocess_data.py"
+        script = os.path.join(
+            self.wan_repo_dir, "wan", "modules", "animate",
+            "preprocess", "preprocess_data.py",
         )
-        process_ckpt = os.path.join(self.ckpt_dir, "process_checkpoint")
+        ckpt = os.path.join(self.ckpt_dir, "process_checkpoint")
 
         cmd = [
-            sys.executable, preprocess_script,
-            "--ckpt_path", process_ckpt,
+            sys.executable, script,
+            "--ckpt_path", ckpt,
             "--video_path", video_path,
-            "--refer_path", ref_path,
+            "--refer_path", photo_path,
             "--save_path", save_path,
-            "--resolution_area", str(self.resolution_w), str(self.resolution_h),
-            "--iterations", str(self.preprocess_iterations),
-            "--k", str(self.preprocess_k),
+            "--resolution_area", str(s.WAN_RESOLUTION_W), str(s.WAN_RESOLUTION_H),
+            "--iterations", str(s.WAN_PREPROCESS_ITERATIONS),
+            "--k", str(s.WAN_PREPROCESS_K),
             "--w_len", "1",
             "--h_len", "1",
         ]
 
-        if self.replace_flag:
+        if s.WAN_REPLACE_FLAG:
             cmd.append("--replace_flag")
 
-        logger.info(f"[BodyGenerator] Running preprocessing: {' '.join(cmd)}")
-
+        logger.info(f"[WanReplace] Preprocessing...")
         result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            cwd=self.wan_repo_dir,
-            timeout=600,  # 10 min max for preprocessing
+            cmd, capture_output=True, text=True,
+            cwd=self.wan_repo_dir, timeout=600,
         )
 
         if result.returncode != 0:
-            logger.error(f"[BodyGenerator] Preprocessing failed:\n{result.stderr}")
-            raise RuntimeError(f"Wan2.2 preprocessing failed: {result.stderr[:500]}")
+            raise RuntimeError(f"Preprocessing failed: {result.stderr[:500]}")
+        logger.info("[WanReplace] Preprocessing done")
 
-        logger.info(f"[BodyGenerator] Preprocessing complete: {save_path}")
-
-    def _run_inference(self, src_root_path: str, output_dir: str):
-        """
-        Run Wan2.2-Animate-14B inference in Replace mode.
-
-        Calls: generate.py --task animate-14B --replace_flag --use_relighting_lora
-        """
+    def _generate(self, src_root_path: str, output_dir: str):
+        """Wan2.2 inference — Replace mode."""
         os.makedirs(output_dir, exist_ok=True)
+        s = self.settings
 
-        generate_script = os.path.join(self.wan_repo_dir, "generate.py")
+        script = os.path.join(self.wan_repo_dir, "generate.py")
 
         cmd = [
-            sys.executable, generate_script,
+            sys.executable, script,
             "--task", "animate-14B",
             "--ckpt_dir", self.ckpt_dir,
             "--src_root_path", src_root_path,
-            "--refert_num", str(self.refert_num),
+            "--refert_num", str(s.WAN_REFERT_NUM),
             "--save_file", output_dir,
         ]
 
-        if self.replace_flag:
+        if s.WAN_REPLACE_FLAG:
             cmd.append("--replace_flag")
-
-        if self.use_relighting_lora:
+        if s.WAN_USE_RELIGHTING_LORA:
             cmd.append("--use_relighting_lora")
-
-        if self.offload_model:
+        if s.WAN_OFFLOAD_MODEL:
             cmd.extend(["--offload_model", "True", "--convert_model_dtype"])
 
-        logger.info(f"[BodyGenerator] Running Wan2.2 inference: {' '.join(cmd)}")
-
+        logger.info("[WanReplace] Generating (this takes a while)...")
         result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            cwd=self.wan_repo_dir,
-            timeout=7200,  # 2 hours max for inference
+            cmd, capture_output=True, text=True,
+            cwd=self.wan_repo_dir, timeout=7200,
         )
 
         if result.returncode != 0:
-            logger.error(f"[BodyGenerator] Inference failed:\n{result.stderr}")
-            raise RuntimeError(f"Wan2.2 inference failed: {result.stderr[:500]}")
+            raise RuntimeError(f"Generation failed: {result.stderr[:500]}")
+        logger.info("[WanReplace] Generation done")
 
-        logger.info(f"[BodyGenerator] Inference complete. Output: {output_dir}")
+    def _collect_result(
+        self, gen_dir: str, output_path: str, source_video: str,
+    ) -> str:
+        """Найти результат Wan2.2 и сохранить как финальное видео."""
+        # Wan2.2 выводит .mp4 файлы
+        videos = sorted(Path(gen_dir).rglob("*.mp4"))
 
-    def _read_output_frames(self, output_dir: str, expected_count: int) -> List[np.ndarray]:
-        """Read generated frames from Wan2.2 output directory."""
-        output_frames = []
+        if videos:
+            # Копируем первый результат + добавляем аудио из оригинала
+            self._merge_audio(str(videos[0]), source_video, output_path)
+            return output_path
 
-        # Wan2.2 outputs video files — find them
-        video_files = sorted(Path(output_dir).rglob("*.mp4"))
+        # Если нет видео — собираем из кадров
+        frames = sorted(Path(gen_dir).rglob("*.png"))
+        if not frames:
+            frames = sorted(Path(gen_dir).rglob("*.jpg"))
 
-        if video_files:
-            # Read frames from output video
-            for video_file in video_files:
-                cap = cv2.VideoCapture(str(video_file))
-                while True:
-                    ret, frame = cap.read()
-                    if not ret:
-                        break
-                    output_frames.append(frame)
-                cap.release()
-        else:
-            # Try reading individual frame images
-            image_files = sorted(
-                Path(output_dir).rglob("*.png"),
-                key=lambda p: p.stem,
-            )
-            if not image_files:
-                image_files = sorted(
-                    Path(output_dir).rglob("*.jpg"),
-                    key=lambda p: p.stem,
-                )
+        if not frames:
+            raise RuntimeError(f"No output found in {gen_dir}")
 
-            for img_path in image_files:
-                frame = cv2.imread(str(img_path))
-                if frame is not None:
-                    output_frames.append(frame)
+        # Собираем видео из кадров через ffmpeg
+        from app.config import settings
+        fps = settings.TARGET_FPS
+        frame_pattern = str(frames[0].parent / "%04d.png")
 
-        if not output_frames:
-            raise RuntimeError(f"No output frames found in {output_dir}")
+        subprocess.run([
+            "ffmpeg", "-y",
+            "-framerate", str(fps),
+            "-i", frame_pattern,
+            "-c:v", "libx264", "-pix_fmt", "yuv420p",
+            output_path,
+        ], capture_output=True, timeout=120)
 
-        # Pad or trim to expected count
-        if len(output_frames) > expected_count:
-            output_frames = output_frames[:expected_count]
-        elif len(output_frames) < expected_count:
-            pad_count = expected_count - len(output_frames)
-            output_frames.extend([output_frames[-1]] * pad_count)
+        # Добавить аудио
+        self._merge_audio(output_path, source_video, output_path)
+        return output_path
 
-        logger.info(
-            f"[BodyGenerator] Read {len(output_frames)} output frames "
-            f"(expected {expected_count})"
-        )
-        return output_frames
+    def _merge_audio(self, video_path: str, audio_source: str, output: str):
+        """Перенести аудио из оригинального видео в результат."""
+        temp_out = output + ".tmp.mp4"
+        try:
+            subprocess.run([
+                "ffmpeg", "-y",
+                "-i", video_path,
+                "-i", audio_source,
+                "-c:v", "copy",
+                "-c:a", "aac",
+                "-map", "0:v:0",
+                "-map", "1:a:0?",
+                "-shortest",
+                temp_out,
+            ], capture_output=True, timeout=120)
 
-    def unload_model(self):
-        """Free GPU VRAM (Wan2.2 runs as subprocess, so cleanup is automatic)."""
+            if os.path.exists(temp_out) and os.path.getsize(temp_out) > 0:
+                shutil.move(temp_out, output)
+            # Если ffmpeg не смог добавить аудио — оставляем видео без звука
+        except Exception:
+            pass
+        finally:
+            if os.path.exists(temp_out):
+                os.unlink(temp_out)
+
+    def _cleanup_gpu(self):
+        """Освободить GPU VRAM."""
         gc.collect()
         try:
             import torch
@@ -253,12 +211,3 @@ class BodyGenerator:
                 torch.cuda.empty_cache()
         except ImportError:
             pass
-
-    def generate_frame(
-        self,
-        reference_image: np.ndarray,
-        pose_image: np.ndarray,
-    ) -> np.ndarray:
-        """Single frame generation (wraps generate_sequence for compatibility)."""
-        result = self.generate_sequence(reference_image, [pose_image])
-        return result[0] if result else pose_image

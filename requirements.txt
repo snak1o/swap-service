@@ -1,39 +1,22 @@
-# API
-fastapi==0.115.0
-uvicorn[standard]==0.30.0
-python-multipart==0.0.9
-pydantic==2.9.0
-
-# Task Queue
-celery[redis]==5.4.0
-redis==5.0.0
-
-# Storage
-minio==7.2.0
-
-# AI / ML
+# Core
 torch>=2.4.0
 torchvision>=0.19.0
 numpy>=1.24.0
-opencv-python-headless>=4.8.0
 Pillow>=10.0.0
 
-# Wan2.2 / Diffusers
+# Wan2.2
 diffusers>=0.32.0
 transformers>=4.45.0
 accelerate>=0.34.0
 sentencepiece
 huggingface_hub[cli]
 
-# Video processing
+# Video
 ffmpeg-python==0.2.0
-scenedetect[opencv]>=0.6.0
 
 # RunPod
 runpod>=1.6.0
 
-# Utilities
-httpx>=0.27.0
+# Utils
 python-dotenv>=1.0.0
-aiofiles>=23.0.0
 tqdm>=4.66.0
