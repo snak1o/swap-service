@@ -250,6 +250,25 @@ body::before {
   border: 2px solid var(--accent);
 }
 
+.cancel-btn {
+  width: 100%;
+  padding: 12px;
+  margin-top: 10px;
+  font-size: 0.95rem;
+  font-weight: 600;
+  font-family: 'Inter', sans-serif;
+  border: 1px solid var(--error);
+  border-radius: var(--radius);
+  cursor: pointer;
+  background: transparent;
+  color: var(--error);
+  transition: var(--transition);
+}
+
+.cancel-btn:hover {
+  background: rgba(255, 71, 87, 0.1);
+}
+
 /* ---- Progress ---- */
 .progress-container {
   margin-top: 24px;

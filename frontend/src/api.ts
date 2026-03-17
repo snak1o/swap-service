@@ -31,11 +31,20 @@ export async function checkHealth(): Promise<HealthResponse> {
   return res.json()
 }
 
+export async function cancelJob(jobId: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/cancel/${jobId}`, { method: 'POST' })
+  if (!res.ok) {
+    const data = await res.json().catch(() => null)
+    throw new Error(data?.error || `Cancel failed: ${res.status}`)
+  }
+}
+
 export async function swapVideo(
   photo: File,
   video: File,
   onUploadProgress?: (percent: number) => void,
-  onJobUpdate?: (update: JobUpdate) => void
+  onJobUpdate?: (update: JobUpdate) => void,
+  onJobId?: (jobId: string) => void
 ): Promise<Blob> {
   const formData = new FormData()
   formData.append('photo', photo)
@@ -72,6 +81,8 @@ export async function swapVideo(
 
     xhr.send(formData)
   })
+
+  if (onJobId) onJobId(jobId)
 
   // Step 2: Connect to Socket.IO and listen for job updates
   return new Promise<Blob>((resolve, reject) => {

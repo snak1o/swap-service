@@ -86,6 +86,15 @@
       </template>
     </button>
 
+    <!-- Cancel Button -->
+    <button
+      v-if="isProcessing"
+      class="cancel-btn"
+      @click="cancelSwap"
+    >
+      ✕ Отменить
+    </button>
+
     <!-- Progress -->
     <div v-if="isProcessing" class="progress-container">
       <div class="progress-bar">
@@ -122,7 +131,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, nextTick } from 'vue'
-import { swapVideo, checkHealth } from './api'
+import { swapVideo, checkHealth, cancelJob } from './api'
 import type { JobUpdate } from './api'
 
 // --- State ---
@@ -141,6 +150,7 @@ const error = ref('')
 const resultUrl = ref('')
 const resultBlob = ref<Blob | null>(null)
 const logMessages = ref<string[]>([])
+const currentJobId = ref<string>('')
 
 const serverStatus = ref<'checking' | 'online' | 'offline'>('checking')
 const statusText = ref('Проверяю сервер...')
@@ -248,6 +258,9 @@ async function startSwap() {
         progressMessage.value = update.message
         logMessages.value.push(update.message)
         scrollLogToBottom()
+      },
+      (jobId: string) => {
+        currentJobId.value = jobId
       }
     )
 
@@ -271,6 +284,20 @@ function downloadResult() {
   URL.revokeObjectURL(a.href)
 }
 
+async function cancelSwap() {
+  if (!currentJobId.value) return
+  try {
+    await cancelJob(currentJobId.value)
+  } catch (e: any) {
+    console.error('Cancel error:', e)
+  }
+  isProcessing.value = false
+  progressMessage.value = ''
+  progressPercent.value = 0
+  logMessages.value = []
+  currentJobId.value = ''
+}
+
 function resetAll() {
   removeFile('photo')
   removeFile('video')
@@ -281,6 +308,7 @@ function resetAll() {
   progressPercent.value = 0
   progressMessage.value = ''
   logMessages.value = []
+  currentJobId.value = ''
 }
 
 async function checkServerStatus() {

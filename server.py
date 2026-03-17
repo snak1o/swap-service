@@ -52,7 +52,7 @@ OFFLOAD_MODEL = os.environ.get("OFFLOAD_MODEL", "false").lower() == "true"
 
 # --- Job storage ---
 JOBS_DIR = tempfile.mkdtemp(prefix="wan_jobs_")
-jobs: dict[str, dict] = {}  # job_id -> { status, work_dir, result_path, error }
+jobs: dict[str, dict] = {}  # job_id -> { status, work_dir, result_path, error, process, cancelled }
 
 
 @app.route("/")
@@ -62,6 +62,7 @@ def index():
         "model": "Wan2.2-Animate-14B",
         "endpoints": {
             "POST /swap": "photo + video → start async job",
+            "POST /cancel/<job_id>": "cancel a running job",
             "GET /result/<job_id>": "download result video",
             "GET /health": "server status",
         },
@@ -106,6 +107,8 @@ def swap():
         "work_dir": work_dir,
         "result_path": None,
         "error": None,
+        "process": None,
+        "cancelled": False,
     }
 
     logger.info(f"[swap] Job {job_id} created, starting background processing...")
@@ -114,6 +117,33 @@ def swap():
     thread.start()
 
     return jsonify({"job_id": job_id})
+
+
+@app.route("/cancel/<job_id>", methods=["POST"])
+def cancel_job(job_id):
+    """Cancel a running job."""
+    job = jobs.get(job_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+    if job["status"] != "processing":
+        return jsonify({"error": "Job is not running"}), 400
+
+    job["cancelled"] = True
+    proc = job.get("process")
+    if proc and proc.poll() is None:
+        proc.kill()
+        logger.info(f"[cancel] Killed process for job {job_id}")
+
+    job["status"] = "cancelled"
+    job["error"] = "Cancelled by user"
+    _emit(job_id, "Job cancelled", percent=0, done=True, error="Cancelled by user")
+    logger.info(f"[cancel] Job {job_id} cancelled")
+
+    # Cleanup work dir
+    shutil.rmtree(job["work_dir"], ignore_errors=True)
+    _cleanup_gpu()
+
+    return jsonify({"status": "cancelled"})
 
 
 @app.route("/result/<job_id>")
@@ -221,7 +251,11 @@ def _preprocess(video_path, photo_path, save_path, job_id: str):
 
     logger.info("[preprocess] Running...")
     process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=WAN_REPO)
+    jobs[job_id]["process"] = process
     for line in iter(process.stdout.readline, ""):
+        if jobs[job_id]["cancelled"]:
+            process.kill()
+            raise RuntimeError("Job cancelled")
         if line:
             stripped = line.strip()
             logger.info(f"[Wan2.2 preprocess] {stripped}")
@@ -258,7 +292,11 @@ def _generate(src_root_path, output_dir, job_id: str):
 
     logger.info("[generate] Running Wan2.2 (this takes a while)...")
     process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=WAN_REPO)
+    jobs[job_id]["process"] = process
     for line in iter(process.stdout.readline, ""):
+        if jobs[job_id]["cancelled"]:
+            process.kill()
+            raise RuntimeError("Job cancelled")
         if line:
             stripped = line.strip()
             logger.info(f"[Wan2.2 generate] {stripped}")
