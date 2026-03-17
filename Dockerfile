@@ -24,8 +24,10 @@ RUN git clone https://github.com/Wan-Video/Wan2.2.git ${WAN_REPO}
 # Install Wan2.2 requirements
 RUN pip install --no-cache-dir -r ${WAN_REPO}/requirements.txt 2>/dev/null || true
 
-# Install project requirements (may override some Wan2.2 deps)
+# Install project requirements — torch FIRST (needed to build flash_attn)
 COPY requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir torch==2.10.0 torchvision==0.25.0 torchaudio==2.10.0
+RUN pip install --no-cache-dir flash_attn==2.8.3
 RUN pip install --no-cache-dir -r /tmp/requirements.txt
 
 # Remove CPU-only onnxruntime if it snuck in
