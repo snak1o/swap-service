@@ -20,8 +20,8 @@ sentencepiece==0.2.1
 onnx==1.20.1
 onnxruntime-gpu==1.24.3
 
-# Flash Attention
-flash_attn==2.8.3
+# Attention
+sageattention==1.0.6
 
 # Vision / Video
 opencv-python-headless==4.13.0.92
