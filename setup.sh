@@ -5,7 +5,7 @@
 # ============================================
 set -e
 
-VOLUME="/runpod-volume"
+VOLUME=""
 MODELS_DIR="${VOLUME}/models"
 WAN_MODEL_DIR="${MODELS_DIR}/Wan2.2-Animate-14B"
 WAN_REPO="/workspace/Wan2.2"

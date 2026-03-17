@@ -29,8 +29,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger(__name__)
 
 # --- Config ---
-VOLUME = os.environ.get("VOLUME", "/runpod-volume")
-MODELS_DIR = os.path.join(VOLUME, "models")
+VOLUME = os.environ.get("VOLUME", "")
+MODELS_DIR = os.path.join(VOLUME, "/models")
 WAN_CKPT_DIR = os.path.join(MODELS_DIR, "Wan2.2-Animate-14B")
 WAN_REPO = os.environ.get("WAN_REPO", "/workspace/Wan2.2")
 PORT = int(os.environ.get("PORT", "8000"))
