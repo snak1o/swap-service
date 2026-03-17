@@ -27,7 +27,7 @@ RUN pip install --no-cache-dir -r ${WAN_REPO}/requirements.txt 2>/dev/null || tr
 # Install project requirements — torch FIRST (needed to build flash_attn)
 COPY requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir torch==2.10.0 torchvision==0.25.0 torchaudio==2.10.0
-RUN pip install --no-cache-dir flash_attn==2.8.3
+RUN pip install --no-cache-dir --no-build-isolation flash_attn==2.8.3
 RUN pip install --no-cache-dir -r /tmp/requirements.txt
 
 # Remove CPU-only onnxruntime if it snuck in
