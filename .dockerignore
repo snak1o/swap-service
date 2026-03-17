@@ -1,0 +1,10 @@
+frontend/
+.git/
+.gitignore
+*.md
+__pycache__/
+*.pyc
+server.py
+setup.sh
+.env
+.github/

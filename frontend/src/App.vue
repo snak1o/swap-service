@@ -130,9 +130,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, nextTick } from 'vue'
-import { swapVideo, checkHealth, cancelJob } from './api'
-import type { JobUpdate } from './api'
+import { ref, computed, nextTick } from 'vue'
+import { swapVideo, cancelJob } from './api'
 
 // --- State ---
 const photoFile = ref<File | null>(null)
@@ -143,7 +142,6 @@ const photoDragover = ref(false)
 const videoDragover = ref(false)
 
 const isProcessing = ref(false)
-const uploadPercent = ref(0)
 const progressMessage = ref('')
 const progressPercent = ref(0)
 const error = ref('')
@@ -152,8 +150,8 @@ const resultBlob = ref<Blob | null>(null)
 const logMessages = ref<string[]>([])
 const currentJobId = ref<string>('')
 
-const serverStatus = ref<'checking' | 'online' | 'offline'>('checking')
-const statusText = ref('Проверяю сервер...')
+const serverStatus = ref<'online'>('online')
+const statusText = ref('RunPod Serverless')
 
 const photoInput = ref<HTMLInputElement | null>(null)
 const videoInput = ref<HTMLInputElement | null>(null)
@@ -230,7 +228,6 @@ async function startSwap() {
   error.value = ''
   resultUrl.value = ''
   resultBlob.value = null
-  uploadPercent.value = 0
   progressPercent.value = 0
   progressMessage.value = 'Загрузка файлов...'
   logMessages.value = []
@@ -239,24 +236,10 @@ async function startSwap() {
     const blob = await swapVideo(
       photoFile.value,
       videoFile.value,
-      (percent) => {
-        uploadPercent.value = percent
-        if (percent < 100) {
-          progressPercent.value = percent * 0.2 // 0-20% = upload
-          progressMessage.value = `Загрузка файлов: ${percent}%`
-        } else {
-          progressPercent.value = 20
-          progressMessage.value = 'Файлы загружены, ожидаем обработку...'
-        }
-      },
-      (update: JobUpdate) => {
-        // Real-time progress from server
-        if (update.percent > 0) {
-          // Map server percent (0-100) to our range (20-100)
-          progressPercent.value = 20 + update.percent * 0.8
-        }
-        progressMessage.value = update.message
-        logMessages.value.push(update.message)
+      (message: string, percent: number) => {
+        progressPercent.value = percent
+        progressMessage.value = message
+        logMessages.value.push(message)
         scrollLogToBottom()
       },
       (jobId: string) => {
@@ -310,22 +293,4 @@ function resetAll() {
   logMessages.value = []
   currentJobId.value = ''
 }
-
-async function checkServerStatus() {
-  try {
-    const health = await checkHealth()
-    serverStatus.value = 'online'
-    statusText.value = health.gpu
-      ? `${health.gpu.name} • ${health.model_loaded ? 'Модель загружена' : 'Модель не найдена'}`
-      : 'Сервер онлайн'
-  } catch {
-    serverStatus.value = 'offline'
-    statusText.value = 'Сервер недоступен'
-  }
-}
-
-onMounted(() => {
-  checkServerStatus()
-  setInterval(checkServerStatus, 30000)
-})
 </script>
