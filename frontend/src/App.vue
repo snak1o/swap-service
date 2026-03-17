@@ -92,6 +92,9 @@
         <div class="progress-fill" :style="{ width: progressPercent + '%' }" />
       </div>
       <div class="progress-text">{{ progressMessage }}</div>
+      <div v-if="logMessages.length" ref="logContainer" class="log-area">
+        <div v-for="(msg, i) in logMessages" :key="i" class="log-line">{{ msg }}</div>
+      </div>
     </div>
 
     <!-- Error -->
@@ -118,8 +121,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, nextTick } from 'vue'
 import { swapVideo, checkHealth } from './api'
+import type { JobUpdate } from './api'
 
 // --- State ---
 const photoFile = ref<File | null>(null)
@@ -136,12 +140,14 @@ const progressPercent = ref(0)
 const error = ref('')
 const resultUrl = ref('')
 const resultBlob = ref<Blob | null>(null)
+const logMessages = ref<string[]>([])
 
 const serverStatus = ref<'checking' | 'online' | 'offline'>('checking')
 const statusText = ref('Проверяю сервер...')
 
 const photoInput = ref<HTMLInputElement | null>(null)
 const videoInput = ref<HTMLInputElement | null>(null)
+const logContainer = ref<HTMLDivElement | null>(null)
 
 // --- Computed ---
 const canSwap = computed(() => {
@@ -199,6 +205,14 @@ function removeFile(type: 'photo' | 'video') {
   }
 }
 
+function scrollLogToBottom() {
+  nextTick(() => {
+    if (logContainer.value) {
+      logContainer.value.scrollTop = logContainer.value.scrollHeight
+    }
+  })
+}
+
 async function startSwap() {
   if (!photoFile.value || !videoFile.value) return
 
@@ -209,6 +223,7 @@ async function startSwap() {
   uploadPercent.value = 0
   progressPercent.value = 0
   progressMessage.value = 'Загрузка файлов...'
+  logMessages.value = []
 
   try {
     const blob = await swapVideo(
@@ -217,13 +232,22 @@ async function startSwap() {
       (percent) => {
         uploadPercent.value = percent
         if (percent < 100) {
-          progressPercent.value = percent * 0.3 // 0-30% = upload
+          progressPercent.value = percent * 0.2 // 0-20% = upload
           progressMessage.value = `Загрузка файлов: ${percent}%`
         } else {
-          progressPercent.value = 35
-          progressMessage.value = 'Wan2.2 обрабатывает видео... это займёт несколько минут'
-          startProgressSimulation()
+          progressPercent.value = 20
+          progressMessage.value = 'Файлы загружены, ожидаем обработку...'
         }
+      },
+      (update: JobUpdate) => {
+        // Real-time progress from server
+        if (update.percent > 0) {
+          // Map server percent (0-100) to our range (20-100)
+          progressPercent.value = 20 + update.percent * 0.8
+        }
+        progressMessage.value = update.message
+        logMessages.value.push(update.message)
+        scrollLogToBottom()
       }
     )
 
@@ -236,19 +260,6 @@ async function startSwap() {
   } finally {
     isProcessing.value = false
   }
-}
-
-let progressInterval: ReturnType<typeof setInterval> | null = null
-
-function startProgressSimulation() {
-  if (progressInterval) clearInterval(progressInterval)
-  progressInterval = setInterval(() => {
-    if (progressPercent.value < 90) {
-      progressPercent.value += 0.5
-      const minutes = Math.round((90 - progressPercent.value) / 3)
-      progressMessage.value = `Wan2.2 обрабатывает видео... ~${minutes} мин.`
-    }
-  }, 5000)
 }
 
 function downloadResult() {
@@ -269,7 +280,7 @@ function resetAll() {
   error.value = ''
   progressPercent.value = 0
   progressMessage.value = ''
-  if (progressInterval) clearInterval(progressInterval)
+  logMessages.value = []
 }
 
 async function checkServerStatus() {

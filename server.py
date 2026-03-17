@@ -2,9 +2,13 @@
 Wan2.2 Replace — API сервер.
 
 Endpoints:
-  POST /swap   — фото + видео → видео с заменённым персонажем
+  POST /swap   — фото + видео → запуск async джоба
+  GET  /result/<job_id> — скачать результат
   GET  /health — статус сервера
   GET  /       — info
+
+WebSocket events (Socket.IO):
+  job_update  — { job_id, message, percent, done, error }
 
 Запуск:
   python server.py
@@ -17,14 +21,18 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+import uuid
 from pathlib import Path
 
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
+from flask_socketio import SocketIO
 
 app = Flask(__name__)
 CORS(app)
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
@@ -42,6 +50,10 @@ REPLACE_FLAG = os.environ.get("REPLACE_FLAG", "true").lower() == "true"
 USE_RELIGHTING_LORA = os.environ.get("USE_RELIGHTING_LORA", "true").lower() == "true"
 OFFLOAD_MODEL = os.environ.get("OFFLOAD_MODEL", "false").lower() == "true"
 
+# --- Job storage ---
+JOBS_DIR = tempfile.mkdtemp(prefix="wan_jobs_")
+jobs: dict[str, dict] = {}  # job_id -> { status, work_dir, result_path, error }
+
 
 @app.route("/")
 def index():
@@ -49,7 +61,8 @@ def index():
         "service": "Wan2.2 Replace",
         "model": "Wan2.2-Animate-14B",
         "endpoints": {
-            "POST /swap": "photo + video → swapped video",
+            "POST /swap": "photo + video → start async job",
+            "GET /result/<job_id>": "download result video",
             "GET /health": "server status",
         },
     })
@@ -70,51 +83,111 @@ def swap():
     """
     POST /swap
     Files: photo (jpg/png), video (mp4)
-    Returns: mp4 video
+    Returns: { job_id }
     """
-    start = time.time()
-
     if "photo" not in request.files:
         return jsonify({"error": "photo file required"}), 400
     if "video" not in request.files:
         return jsonify({"error": "video file required"}), 400
 
-    work_dir = tempfile.mkdtemp(prefix="wan_swap_")
+    job_id = str(uuid.uuid4())
+    work_dir = os.path.join(JOBS_DIR, job_id)
+    os.makedirs(work_dir, exist_ok=True)
+
+    # Save uploads
+    photo_path = os.path.join(work_dir, "photo.jpg")
+    video_path = os.path.join(work_dir, "source.mp4")
+
+    request.files["photo"].save(photo_path)
+    request.files["video"].save(video_path)
+
+    jobs[job_id] = {
+        "status": "processing",
+        "work_dir": work_dir,
+        "result_path": None,
+        "error": None,
+    }
+
+    logger.info(f"[swap] Job {job_id} created, starting background processing...")
+
+    thread = threading.Thread(target=_process_job, args=(job_id,), daemon=True)
+    thread.start()
+
+    return jsonify({"job_id": job_id})
+
+
+@app.route("/result/<job_id>")
+def get_result(job_id):
+    """Download the result video for a completed job."""
+    job = jobs.get(job_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+    if job["status"] == "processing":
+        return jsonify({"error": "Job still processing"}), 202
+    if job["error"]:
+        return jsonify({"error": job["error"]}), 500
+    if not job["result_path"] or not os.path.exists(job["result_path"]):
+        return jsonify({"error": "Result file not found"}), 500
+
+    return send_file(
+        job["result_path"],
+        mimetype="video/mp4",
+        as_attachment=True,
+        download_name="result.mp4",
+    )
+
+
+def _emit(job_id: str, message: str, percent: int = 0, done: bool = False, error: str | None = None):
+    """Helper to emit job_update via Socket.IO."""
+    payload = {
+        "job_id": job_id,
+        "message": message,
+        "percent": percent,
+        "done": done,
+    }
+    if error:
+        payload["error"] = error
+    socketio.emit("job_update", payload)
+    logger.info(f"[job_update] {job_id}: {message} ({percent}%)")
+
+
+def _process_job(job_id: str):
+    """Background job: preprocess → generate → collect result."""
+    job = jobs[job_id]
+    work_dir = job["work_dir"]
+    photo_path = os.path.join(work_dir, "photo.jpg")
+    video_path = os.path.join(work_dir, "source.mp4")
+    output_path = os.path.join(work_dir, "result.mp4")
 
     try:
-        # Save uploads
-        photo_path = os.path.join(work_dir, "photo.jpg")
-        video_path = os.path.join(work_dir, "source.mp4")
-        output_path = os.path.join(work_dir, "result.mp4")
-
-        request.files["photo"].save(photo_path)
-        request.files["video"].save(video_path)
-
-        logger.info(f"[swap] Got photo + video, starting Wan2.2 Replace...")
+        start = time.time()
 
         # Step 1: Preprocess
+        _emit(job_id, "Preprocessing: extracting skeleton, face, pose...", percent=5)
         preprocess_dir = os.path.join(work_dir, "preprocess")
-        _preprocess(video_path, photo_path, preprocess_dir)
+        _preprocess(video_path, photo_path, preprocess_dir, job_id)
 
         # Step 2: Generate
+        _emit(job_id, "Generating video with Wan2.2...", percent=30)
         gen_dir = os.path.join(work_dir, "generated")
-        _generate(preprocess_dir, gen_dir)
+        _generate(preprocess_dir, gen_dir, job_id)
 
         # Step 3: Collect result + merge audio
+        _emit(job_id, "Merging audio and finalizing...", percent=90)
         result = _collect_result(gen_dir, output_path, video_path)
 
         elapsed = time.time() - start
-        logger.info(f"[swap] Done in {elapsed:.1f}s")
-
-        return send_file(result, mimetype="video/mp4", as_attachment=True,
-                         download_name="result.mp4")
+        job["status"] = "done"
+        job["result_path"] = result
+        _emit(job_id, f"Done in {elapsed:.1f}s", percent=100, done=True)
 
     except Exception as e:
-        logger.error(f"[swap] Error: {e}", exc_info=True)
-        return jsonify({"error": str(e)}), 500
+        logger.error(f"[job {job_id}] Error: {e}", exc_info=True)
+        job["status"] = "error"
+        job["error"] = str(e)
+        _emit(job_id, str(e), percent=0, done=True, error=str(e))
 
     finally:
-        shutil.rmtree(work_dir, ignore_errors=True)
         _cleanup_gpu()
 
 
@@ -122,7 +195,7 @@ def swap():
 # Wan2.2 Pipeline
 # =============================================
 
-def _preprocess(video_path, photo_path, save_path):
+def _preprocess(video_path, photo_path, save_path, job_id: str):
     """Wan2.2 preprocessing: skeleton, face encoding, pose."""
     os.makedirs(save_path, exist_ok=True)
 
@@ -147,15 +220,21 @@ def _preprocess(video_path, photo_path, save_path):
         cmd.append("--replace_flag")
 
     logger.info("[preprocess] Running...")
-    result = subprocess.run(cmd, capture_output=True, text=True,
-                            cwd=WAN_REPO, timeout=600)
+    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=WAN_REPO)
+    for line in iter(process.stdout.readline, ""):
+        if line:
+            stripped = line.strip()
+            logger.info(f"[Wan2.2 preprocess] {stripped}")
+            _emit(job_id, f"[preprocess] {stripped}", percent=10)
+    process.stdout.close()
+    returncode = process.wait(timeout=600)
 
-    if result.returncode != 0:
-        raise RuntimeError(f"Preprocess failed: {result.stderr[:500]}")
+    if returncode != 0:
+        raise RuntimeError(f"Preprocess failed with code {returncode}")
     logger.info("[preprocess] Done")
 
 
-def _generate(src_root_path, output_dir):
+def _generate(src_root_path, output_dir, job_id: str):
     """Wan2.2 inference — Replace mode."""
     os.makedirs(output_dir, exist_ok=True)
 
@@ -178,11 +257,17 @@ def _generate(src_root_path, output_dir):
         cmd.extend(["--offload_model", "True", "--convert_model_dtype"])
 
     logger.info("[generate] Running Wan2.2 (this takes a while)...")
-    result = subprocess.run(cmd, capture_output=True, text=True,
-                            cwd=WAN_REPO, timeout=7200)
+    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=WAN_REPO)
+    for line in iter(process.stdout.readline, ""):
+        if line:
+            stripped = line.strip()
+            logger.info(f"[Wan2.2 generate] {stripped}")
+            _emit(job_id, f"[generate] {stripped}", percent=50)
+    process.stdout.close()
+    returncode = process.wait(timeout=7200)
 
-    if result.returncode != 0:
-        raise RuntimeError(f"Generate failed: {result.stderr[:500]}")
+    if returncode != 0:
+        raise RuntimeError(f"Generate failed with code {returncode}")
     logger.info("[generate] Done")
 
 
@@ -265,4 +350,4 @@ if __name__ == "__main__":
     logger.info(f"Starting Wan2.2 Replace server on port {PORT}")
     logger.info(f"Model: {WAN_CKPT_DIR}")
     logger.info(f"Repo: {WAN_REPO}")
-    app.run(host="0.0.0.0", port=PORT, debug=False)
+    socketio.run(app, host="0.0.0.0", port=PORT, debug=False, allow_unsafe_werkzeug=True)
